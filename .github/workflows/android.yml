@@ -22,13 +22,16 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest 已预装 Android SDK，直接用它的 cmdline-tools 装所需组件。
+      # 不再使用 android-actions/setup-android，它会执行已下线的 `sdkmanager tools` 而失败。
       - name: Install SDK components
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          CMDLINE_BIN=$(dirname "$(find "$SDK_ROOT/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort | tail -1)")
+          export PATH="$CMDLINE_BIN:$PATH"
+          sdkmanager --version
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
