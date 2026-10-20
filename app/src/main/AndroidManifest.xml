@@ -31,22 +31,6 @@
             </intent-filter>
         </activity>
 
-        <!-- OAuth 回调：自定义 scheme 兜底（部分 ROM 不转发 loopback 回调） -->
-        <activity
-            android:name=".data.OAuthRedirectActivity"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:noHistory="true">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="oauth"
-                    android:scheme="wbhub" />
-            </intent-filter>
-        </activity>
-
         <service
             android:name=".bridge.BridgeService"
             android:exported="false"

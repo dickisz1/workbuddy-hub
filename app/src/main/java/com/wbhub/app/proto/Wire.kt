@@ -11,9 +11,10 @@ enum class Region(val id: String, val displayName: String) {
     /**
      * 上游站点域名，同时也是身份头 `X-Domain` 的取值。
      *
-     * 这里给的是默认值。真实客户端并不写死：它从登录态里的 `auth.domain` 读，不同版本、
-     * 不同地区取值可能是 copilot.tencent.com / www.codebuddy.cn 等。拿到账号信息后应以
-     * 登录态为准，此处仅作未登录时的兜底。
+     * 官方 IAM 文档：国内站走 `copilot.tencent.com`（`CODEBUDDY_INTERNET_ENVIRONMENT=internal`），
+     * 国际站走 `codebuddy.ai`（默认 `public`）。Project 名沿用 WorkBuddy，`www.workbuddy.ai`
+     * 与 `www.codebuddy.ai` 是同一套服务的两个品牌域，实测两者的 `/oauth2/token` 都回
+     * `invalid_client`，即端点为真。
      */
     val apiDomain: String
         get() = when (this) {
@@ -21,26 +22,18 @@ enum class Region(val id: String, val displayName: String) {
             INTL -> "www.workbuddy.ai"
         }
 
-    /** 上游站点根。聊天、签到、模型配置都挂在它下面，各带自己的版本前缀。 */
+    /** 上游站点根。聊天、签到等接口都挂在它下面，各带自己的版本前缀。 */
     val host: String get() = "https://$apiDomain"
 
-    /** OAuth 授权页（App 内通过系统浏览器打开）。 */
-    val authorizeUrl: String
-        get() = "$host/oauth/authorize"
-
-    /** 换取 access_token / refresh_token。 */
-    val tokenUrl: String
-        get() = "$host/oauth/token"
-
     /**
-     * client_id。
+     * 企业凭证换取 access_token 的端点（OAuth2 `client_credentials`）。
      *
-     * 待确证：个人账号登录不是公开的 PKCE 流程（桌面端走扫码 / 浏览器登录，凭证由客户端
-     * 写入本地 auth 文件），目前唯一有文档的 OAuth 是企业 Client Credentials，端点为
-     * `https://copilot.tencent.com/oauth2/token`。此值暂无依据，替换真实登录流程时一并修正。
+     * 官方 IAM 文档写的就是这一条：POST `grant_type=client_credentials` + `client_id` +
+     * `client_secret`。实测假凭证回 `{"error":"invalid_client"}`，端点为真。
+     * 个人账号不经过这里，直接用静态 API Key 调上游（`X-Api-Key` 头）。
      */
-    val clientId: String
-        get() = "workbuddy-cli"
+    val tokenUrl: String
+        get() = "$host/oauth2/token"
 
     companion object {
         fun fromId(id: String?): Region = entries.firstOrNull { it.id == id } ?: CN
@@ -67,7 +60,13 @@ object Wire {
      */
     const val UPSTREAM_CHAT_PATH = "/v2/chat/completions"
 
-    /** 待确证：模型列表来自上游给 CLI Agent 的产品配置，是否在 /v2 之下未确认。 */
+    /**
+     * 待确证：官方没有公开「拉取模型列表」的私有接口。
+     *
+     * `/v3/config` 实测 404，其余候选路径（/v2/models、/v1/models、/v2/model/config 等）同样 404。
+     * CLI 的模型列表实际来自本地 `models.json`（见官方 models.json 配置指南），因此本地
+     * `/v1/models` 拉不到上游时返回空列表即可，不影响对话。
+     */
     const val UPSTREAM_MODELS_PATH = "/v3/config"
 
     /** 每日签到。 */
@@ -75,6 +74,14 @@ object Wire {
 
     /** 待确证：上游未见「活跃上报」接口，此路径暂无依据。 */
     const val UPSTREAM_ACTIVE_PATH = "/api/growth/active-report"
+
+    /**
+     * 个人账号的静态 API Key 头。
+     *
+     * 官方 IAM 文档 `CODEBUDDY_API_KEY` 一项：Auth Type = API Key（`X-Api-Key` header）。
+     * 企业账号走 `Authorization: Bearer <access_token>`，两者互斥。
+     */
+    const val HEADER_API_KEY = "X-Api-Key"
 
     /** 上游身份头名称。每次转发都要带齐。 */
     const val HEADER_USER_ID = "X-User-Id"
@@ -109,12 +116,8 @@ object Wire {
     const val UPSTREAM_USER_AGENT = "WorkBuddy/$IDE_VERSION_VALUE"
 
     const val PRODUCT_NAME = "workbuddy-hub"
-    const val APP_VERSION = "0.3.0"
+    const val APP_VERSION = "0.3.1"
     const val CLIENT_TYPE = "android-hub"
-
-    /** OAuth 回调：优先 loopback，失败时回落到自定义 scheme。 */
-    const val REDIRECT_SCHEME = "http://127.0.0.1"
-    const val REDIRECT_CUSTOM_SCHEME = "wbhub://oauth"
 
     fun upstreamUrl(region: Region, path: String): String = region.host + path
 

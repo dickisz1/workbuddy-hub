@@ -25,7 +25,7 @@ import kotlin.concurrent.thread
  * 手写 [ServerSocket] + 线程池，请求/响应全部按**原始字节**处理，
  * 避免 SSE 流式输出被二次编码破坏（不乱码、不中断）。
  *
- * 处理链路：校验共享密钥 → 解析并改写请求体 → 补充身份头与 access_token
+ * 处理链路：校验共享密钥 → 解析并改写请求体 → 按登录方式补身份头与鉴权头
  * → 转发到上游 → 原样透传 SSE 字节流。
  */
 class BridgeServer(
@@ -129,9 +129,8 @@ class BridgeServer(
         val (json, payload) = rewritten
 
         val region = resolveRegion(request)
-        val token = upstream.ensureToken(region)
-        if (token.isNullOrBlank()) {
-            sendError(out, 401, "该区域（${region.displayName}）尚未登录，请先在凭证页完成 OAuth 授权")
+        if (!credentials.isLoggedIn(region)) {
+            sendError(out, 401, "该区域（${region.displayName}）尚未登录，请先在凭证页填写 API Key 或企业凭证")
             return
         }
 

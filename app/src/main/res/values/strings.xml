@@ -8,11 +8,18 @@
     <string name="credential_title">账号凭证</string>
     <string name="credential_region_cn">国内版</string>
     <string name="credential_region_intl">国际版</string>
-    <string name="credential_login">登录</string>
     <string name="credential_logout">退出登录</string>
-    <string name="credential_refresh">刷新 Token</string>
+    <string name="credential_refresh">刷新 Token（企业账号）</string>
     <string name="credential_status_idle">未登录</string>
-    <string name="credential_hint">登录会打开系统浏览器完成官方 OAuth 授权，回调后凭证加密保存在本机。</string>
+    <string name="credential_hint">个人账号用平台控制台生成的 API Key（随请求走 X-Api-Key 头）；企业账号用 Client ID / Secret 换取 access_token（随请求走 Authorization: Bearer）。凭证均加密保存在本机，国内版与国际版各自独立。</string>
+
+    <string name="credential_api_key_section">个人账号 · API Key</string>
+    <string name="credential_api_key_hint">API Key</string>
+    <string name="credential_api_key_save">保存 API Key</string>
+    <string name="credential_client_section">企业账号 · Client Credentials</string>
+    <string name="credential_client_id_hint">Client ID</string>
+    <string name="credential_client_secret_hint">Client Secret</string>
+    <string name="credential_client_save">用企业凭证登录</string>
 
     <string name="platform_title">本地转发服务</string>
     <string name="platform_enable">启动转发服务</string>

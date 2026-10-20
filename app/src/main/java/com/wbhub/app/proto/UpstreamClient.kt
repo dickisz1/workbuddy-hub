@@ -8,7 +8,6 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class HttpResponse(val code: Int, val body: String)
@@ -18,7 +17,7 @@ data class HttpResponse(val code: Int, val body: String)
  *
  * - [streamChat] 以原始字节块回调，保证 SSE 流式输出不被二次编码破坏；
  * - [jsonRequest] 处理普通一次性请求（模型列表、签到等）；
- * - 每次调用前经 [ensureToken] 检查并刷新 Token。
+ * - 每次调用前经 [applyAuth] 按登录方式补鉴权头（API Key 或 Bearer Token）。
  */
 class UpstreamClient(private val credentials: CredentialStore) {
 
@@ -75,7 +74,6 @@ class UpstreamClient(private val credentials: CredentialStore) {
     }
 
     suspend fun fetchModels(region: Region): List<String> = withContext(Dispatchers.IO) {
-        ensureToken(region)
         val response = jsonRequest(region, Wire.UPSTREAM_MODELS_PATH, "GET", null)
         if (response.code !in 200..299) return@withContext emptyList()
         runCatching {
@@ -92,10 +90,29 @@ class UpstreamClient(private val credentials: CredentialStore) {
     }
 
     /**
-     * 取可用 access_token：临近过期时用 refresh_token 换新并回写 [CredentialStore]。
-     * 用一个原子标记防止刷新请求自身再次触发刷新。
+     * 按当前登录方式补鉴权头，两种模式互斥：
+     * - 个人账号：静态 API Key → `X-Api-Key`；
+     * - 企业账号：access_token 临近过期先用 Client 凭证换新 → `Authorization: Bearer`。
      */
-    fun ensureToken(region: Region): String? {
+    private fun applyAuth(conn: HttpURLConnection, region: Region) {
+        when (credentials.mode(region)) {
+            AuthMode.API_KEY ->
+                credentials.apiKey(region)?.let { conn.setRequestProperty(Wire.HEADER_API_KEY, it) }
+
+            AuthMode.CLIENT_CREDENTIALS -> {
+                val token = tokenWithRefresh(region) ?: return
+                conn.setRequestProperty("Authorization", "Bearer $token")
+            }
+
+            AuthMode.NONE -> Unit
+        }
+    }
+
+    /**
+     * 企业模式取 token：临近过期先用 Client 凭证换新并回写 [CredentialStore]。
+     * 用一个原子标记防止换新请求自身再次触发换新。
+     */
+    private fun tokenWithRefresh(region: Region): String? {
         val token = credentials.accessToken(region) ?: return null
         if (!credentials.needsRefresh(region)) return token
         if (!refreshing.compareAndSet(false, true)) return token
@@ -106,24 +123,17 @@ class UpstreamClient(private val credentials: CredentialStore) {
         }
     }
 
-    /** 用 refresh_token 走标准 OAuth refresh grant。 */
+    /**
+     * 企业账号：用已存的 Client ID / Secret 走 client_credentials 换新 access_token。
+     * 个人 API Key 模式没有 Client 凭证，直接返回 null。
+     */
     fun refresh(region: Region): String? {
-        val refreshToken = credentials.refreshToken(region) ?: return null
-        val form = form(
-            "grant_type" to "refresh_token",
-            "client_id" to region.clientId,
-            "refresh_token" to refreshToken,
-        )
-        val response = jsonRequest(region, TOKEN_REFRESH_PATH, "POST", form)
-        if (response.code !in 200..299) return null
-        return runCatching {
-            val json = JSONObject(response.body)
-            val access = json.optString("access_token").takeIf { it.isNotBlank() } ?: return null
-            val newRefresh = json.optString("refresh_token").takeIf { it.isNotBlank() } ?: refreshToken
-            val expiresIn = json.optLong("expires_in", 3600L)
-            credentials.saveAccount(region, access, newRefresh, expiresIn)
-            access
-        }.getOrNull()
+        val id = credentials.clientId(region) ?: return null
+        val secret = credentials.clientSecret(region) ?: return null
+        val result = TokenEndpoint.request(region, id, secret)
+        val token = result.accessToken ?: return null
+        credentials.updateAccessToken(region, token, result.expiresInSec)
+        return token
     }
 
     private fun open(
@@ -146,14 +156,9 @@ class UpstreamClient(private val credentials: CredentialStore) {
             conn.setRequestProperty(k, v)
         }
         extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-        ensureToken(region)?.let { conn.setRequestProperty("Authorization", "Bearer $it") }
+        applyAuth(conn, region)
         return conn
     }
-
-    private fun form(vararg pairs: Pair<String, String>): String =
-        pairs.joinToString("&") { (k, v) ->
-            "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
-        }
 
     private fun readAll(stream: InputStream): String {
         val out = ByteArrayOutputStream()
@@ -169,6 +174,5 @@ class UpstreamClient(private val credentials: CredentialStore) {
     private companion object {
         const val BUFFER_SIZE = 8 * 1024
         const val CONNECT_TIMEOUT_MS = 15_000
-        const val TOKEN_REFRESH_PATH = "/oauth/token"
     }
 }
