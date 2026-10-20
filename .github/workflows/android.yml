@@ -22,12 +22,20 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # ubuntu-latest 已预装 Android SDK，直接用它的 cmdline-tools 装所需组件。
-      # 不再使用 android-actions/setup-android，它会执行已下线的 `sdkmanager tools` 而失败。
-      - name: Install SDK components
+      # ubuntu-latest 镜像已预装 Android SDK，但不导出 ANDROID_HOME / ANDROID_SDK_ROOT，
+      # 所以这里显式定位 cmdline-tools 并把 SDK 路径写进 GITHUB_ENV，供后面构建步骤使用。
+      - name: Set up Android SDK
         run: |
-          SDK_ROOT="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
-          CMDLINE_BIN=$(dirname "$(find "$SDK_ROOT/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort | tail -1)")
+          SDK_ROOT="/usr/local/lib/android/sdk"
+          CMDLINE_BIN=$(dirname "$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -1)")
+          if [ -z "$CMDLINE_BIN" ] || [ "$CMDLINE_BIN" = "." ]; then
+            echo "未找到 sdkmanager，实际目录结构如下："
+            find "$SDK_ROOT" -maxdepth 4 -name sdkmanager -print
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
           export PATH="$CMDLINE_BIN:$PATH"
           sdkmanager --version
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
