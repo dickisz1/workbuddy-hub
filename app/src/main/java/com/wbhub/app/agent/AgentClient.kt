@@ -40,7 +40,7 @@ class AgentClient(
         onEvent: (String) -> Unit,
     ): String = withContext(Dispatchers.IO) {
         if (!credentials.isLoggedIn(region)) {
-            throw IllegalStateException("${region.displayName}尚未登录，请先在凭证页填写 API Key 或企业凭证")
+            throw IllegalStateException("${region.displayName}尚未登录，请先在凭证页完成浏览器登录")
         }
         val messages = JSONArray()
             .put(systemMessage())

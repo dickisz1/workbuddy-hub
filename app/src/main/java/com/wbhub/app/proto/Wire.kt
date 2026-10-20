@@ -2,38 +2,22 @@ package com.wbhub.app.proto
 
 /**
  * 国内版 / 国际版是两套彼此独立的账号体系，可同时登录并随时切换。
+ *
+ * [platform] 是上游登录/授权接口要求的平台标识，与站点一一对应：
+ * 国内版 `workbuddy`，国际版 `workbuddy-ai`。
  */
-enum class Region(val id: String, val displayName: String) {
+enum class Region(
+    val id: String,
+    val displayName: String,
+    val apiDomain: String,
+    val platform: String,
+) {
 
-    CN("cn", "国内版"),
-    INTL("intl", "国际版");
+    CN("cn", "国内版", "copilot.tencent.com", "workbuddy"),
+    INTL("intl", "国际版", "www.workbuddy.ai", "workbuddy-ai");
 
-    /**
-     * 上游站点域名，同时也是身份头 `X-Domain` 的取值。
-     *
-     * 官方 IAM 文档：国内站走 `copilot.tencent.com`（`CODEBUDDY_INTERNET_ENVIRONMENT=internal`），
-     * 国际站走 `codebuddy.ai`（默认 `public`）。Project 名沿用 WorkBuddy，`www.workbuddy.ai`
-     * 与 `www.codebuddy.ai` 是同一套服务的两个品牌域，实测两者的 `/oauth2/token` 都回
-     * `invalid_client`，即端点为真。
-     */
-    val apiDomain: String
-        get() = when (this) {
-            CN -> "copilot.tencent.com"
-            INTL -> "www.workbuddy.ai"
-        }
-
-    /** 上游站点根。聊天、签到等接口都挂在它下面，各带自己的版本前缀。 */
+    /** 上游站点根。聊天、授权、配置等接口都挂在它下面。 */
     val host: String get() = "https://$apiDomain"
-
-    /**
-     * 企业凭证换取 access_token 的端点（OAuth2 `client_credentials`）。
-     *
-     * 官方 IAM 文档写的就是这一条：POST `grant_type=client_credentials` + `client_id` +
-     * `client_secret`。实测假凭证回 `{"error":"invalid_client"}`，端点为真。
-     * 个人账号不经过这里，直接用静态 API Key 调上游（`X-Api-Key` 头）。
-     */
-    val tokenUrl: String
-        get() = "$host/oauth2/token"
 
     companion object {
         fun fromId(id: String?): Region = entries.firstOrNull { it.id == id } ?: CN
@@ -61,11 +45,11 @@ object Wire {
     const val UPSTREAM_CHAT_PATH = "/v2/chat/completions"
 
     /**
-     * 待确证：官方没有公开「拉取模型列表」的私有接口。
+     * 产品配置（模型清单）。
      *
-     * `/v3/config` 实测 404，其余候选路径（/v2/models、/v1/models、/v2/model/config 等）同样 404。
-     * CLI 的模型列表实际来自本地 `models.json`（见官方 models.json 配置指南），因此本地
-     * `/v1/models` 拉不到上游时返回空列表即可，不影响对话。
+     * 取自 WorkBuddy 客户端自身的 `GET /v3/config`：返回 `data.agents`（`cli` 一项的
+     * `models` 是可用模型 id）与 `data.models`（每个模型的名称、上下文、价格）。需要携带
+     * 与对话相同的身份头，未登录会 404/401。
      */
     const val UPSTREAM_MODELS_PATH = "/v3/config"
 
@@ -75,13 +59,43 @@ object Wire {
     /** 待确证：上游未见「活跃上报」接口，此路径暂无依据。 */
     const val UPSTREAM_ACTIVE_PATH = "/api/growth/active-report"
 
-    /**
-     * 个人账号的静态 API Key 头。
-     *
-     * 官方 IAM 文档 `CODEBUDDY_API_KEY` 一项：Auth Type = API Key（`X-Api-Key` header）。
-     * 企业账号走 `Authorization: Bearer <access_token>`，两者互斥。
-     */
-    const val HEADER_API_KEY = "X-Api-Key"
+    // ------------------------------------------------------------------
+    // 浏览器登录（WorkBuddy 原生凭证流程）
+    // ------------------------------------------------------------------
+
+    /** 申请登录 state，返回 `{state, authUrl}`。 */
+    const val AUTH_STATE_PATH = "/v2/plugin/auth/state"
+
+    /** 轮询登录结果，返回 accessToken / refreshToken / 过期时间。 */
+    const val AUTH_TOKEN_PATH = "/v2/plugin/auth/token"
+
+    /** 用 refreshToken 换新令牌。 */
+    const val AUTH_REFRESH_PATH = "/v2/plugin/auth/token/refresh"
+
+    /** 用 accessToken 取账号信息（uid、企业 id）。 */
+    const val LOGIN_ACCOUNT_PATH = "/v2/plugin/login/account"
+
+    /** 登录页版本参数，WorkBuddy 客户端打开登录页时带的值。 */
+    const val LOGIN_PAGE_VERSION = "2.0.0"
+
+    /** 上游表示「用户还没在浏览器里完成登录」的业务码，需要继续轮询。 */
+    const val CODE_SIGN_IN_PENDING = 11217
+    const val CODE_ACCOUNT_PENDING = 12151
+
+    /** 申请 state / 轮询账号时用来声明「本次请求不携带身份」。 */
+    const val HEADER_NO_AUTHORIZATION = "X-No-Authorization"
+    const val HEADER_NO_USER_ID = "X-No-User-Id"
+    const val HEADER_NO_ENTERPRISE_ID = "X-No-Enterprise-Id"
+    const val HEADER_NO_DEPARTMENT_INFO = "X-No-Department-Info"
+
+    /** 刷新令牌用头。 */
+    const val HEADER_REFRESH_TOKEN = "X-Refresh-Token"
+    const val HEADER_AUTH_REFRESH_SOURCE = "X-Auth-Refresh-Source"
+    const val AUTH_REFRESH_SOURCE_VALUE = "plugin"
+
+    /** 企业（团队）账号必须带，否则上游按个人套餐作答。 */
+    const val HEADER_ENTERPRISE_ID = "X-Enterprise-Id"
+    const val HEADER_TENANT_ID = "X-Tenant-Id"
 
     /** 上游身份头名称。每次转发都要带齐。 */
     const val HEADER_USER_ID = "X-User-Id"
@@ -111,12 +125,13 @@ object Wire {
     const val AGENT_PURPOSE_VALUE = "conversation"
     const val AGENT_INTENT_VALUE = "craft"
     const val AGENT_TYPE_VALUE = "main"
+    const val REQUESTED_WITH_VALUE = "XMLHttpRequest"
 
     /** 上游要求以 WorkBuddy 客户端的 UA 发起，缺了会直接回错误码 10085。 */
     const val UPSTREAM_USER_AGENT = "WorkBuddy/$IDE_VERSION_VALUE"
 
     const val PRODUCT_NAME = "workbuddy-hub"
-    const val APP_VERSION = "0.3.1"
+    const val APP_VERSION = "0.4.0"
     const val CLIENT_TYPE = "android-hub"
 
     fun upstreamUrl(region: Region, path: String): String = region.host + path
@@ -125,24 +140,39 @@ object Wire {
 
     fun modelsEndpoint(port: Int): String = "http://$LOOPBACK:$port$MODELS_PATH"
 
+    /** 给上游返回的登录页补上客户端参数，与 WorkBuddy 官方客户端一致。 */
+    fun withLoginParams(authUrl: String, loginSessionId: String): String {
+        val separator = if (authUrl.contains('?')) '&' else '?'
+        return "$authUrl${separator}version=$LOGIN_PAGE_VERSION&loginSessionId=$loginSessionId"
+    }
+
     /**
      * 每次转发都补上，用于通过上游的身份校验。
      *
-     * `X-Agent-Type` 只有国际版要带；企业账号还需要 `X-Enterprise-Id` / `X-Tenant-Id`，
-     * 个人账号不带即按个人套餐计。
+     * - `X-Domain` 取令牌里的 domain，缺省回落到站点域名；
+     * - 企业账号额外带 `X-Enterprise-Id` / `X-Tenant-Id`（两者同值），个人账号不带；
+     * - `X-Agent-Type` 只有国际版要带。
      */
-    fun identityHeaders(userId: String, region: Region): Map<String, String> = buildMap {
+    fun identityHeaders(
+        userId: String,
+        domain: String,
+        region: Region,
+        enterpriseId: String = "",
+    ): Map<String, String> = buildMap {
         put(HEADER_USER_ID, userId)
-        put(HEADER_DOMAIN, region.apiDomain)
+        put(HEADER_DOMAIN, domain.ifBlank { region.apiDomain })
         put(HEADER_PRODUCT, PRODUCT_VALUE)
         put(HEADER_IDE_TYPE, IDE_TYPE_VALUE)
         put(HEADER_IDE_NAME, IDE_NAME_VALUE)
         put(HEADER_IDE_VERSION, IDE_VERSION_VALUE)
         put(HEADER_AGENT_PURPOSE, AGENT_PURPOSE_VALUE)
         put(HEADER_AGENT_INTENT, AGENT_INTENT_VALUE)
-        // 取值来源未确证，这里取该头的惯用值
-        put(HEADER_REQUESTED_WITH, "XMLHttpRequest")
+        put(HEADER_REQUESTED_WITH, REQUESTED_WITH_VALUE)
         if (region == Region.INTL) put(HEADER_AGENT_TYPE, AGENT_TYPE_VALUE)
+        if (enterpriseId.isNotBlank()) {
+            put(HEADER_ENTERPRISE_ID, enterpriseId)
+            put(HEADER_TENANT_ID, enterpriseId)
+        }
     }
 
     /**

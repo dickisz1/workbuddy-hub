@@ -4,26 +4,29 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import java.util.UUID
 
 /**
- * 某区域当前的登录方式。
+ * 一次完整登录后上游颁发的原生凭证。
  *
- * 官方只有两条真实路子：个人账号给静态 API Key，企业账号给 client_id + client_secret 换
- * access_token。没有面向个人的浏览器授权流程，所以这里没有「授权码」这一态。
+ * WorkBuddy 的凭证不是静态 API Key，而是浏览器登录换来的
+ * `accessToken` + `refreshToken` 对；`uid` / `domain` / `enterpriseId`
+ * 必须随每个请求一起放进身份头，否则上游会拒绝或按错误套餐计费。
  */
-enum class AuthMode { NONE, API_KEY, CLIENT_CREDENTIALS }
-
-/** 企业凭证换来的令牌。个人 API Key 模式不产生它。 */
 data class Account(
     val region: Region,
     val accessToken: String,
+    val refreshToken: String,
+    /** access_token 过期时间（毫秒时间戳），0 表示未知。 */
     val expiresAt: Long,
+    /** refresh_token 过期时间（毫秒时间戳），0 表示未知。 */
+    val refreshExpiresAt: Long,
+    val domain: String,
+    val uid: String,
+    val enterpriseId: String,
 )
 
 /**
- * 加密持久化登录凭证：API Key、企业 Client 凭证、access_token 与设备指纹。
- * 国内版与国际版各自独立保存，互不覆盖。
+ * 加密持久化登录凭证。国内版与国际版各自独立保存，互不覆盖。
  */
 class CredentialStore(context: Context) {
 
@@ -42,102 +45,83 @@ class CredentialStore(context: Context) {
         )
     }
 
-    /** 个人账号：只存 API Key，并清掉可能残留的企业凭证。 */
-    fun saveApiKey(region: Region, apiKey: String) {
+    /** 登录成功后整体落盘。 */
+    fun saveAccount(account: Account) {
+        val region = account.region
         prefs.edit()
-            .putString(keyApiKey(region), apiKey)
-            .remove(keyClientId(region))
-            .remove(keyClientSecret(region))
-            .remove(keyAccess(region))
-            .remove(keyExpires(region))
+            .putString(keyAccess(region), account.accessToken)
+            .putString(keyRefresh(region), account.refreshToken)
+            .putLong(keyExpires(region), account.expiresAt)
+            .putLong(keyRefreshExpires(region), account.refreshExpiresAt)
+            .putString(keyDomain(region), account.domain)
+            .putString(keyUid(region), account.uid)
+            .putString(keyEnterprise(region), account.enterpriseId)
             .apply()
     }
 
-    /** 企业账号：存 Client ID / Secret 与换来的 access_token，并清掉 API Key。 */
-    fun saveClientCredentials(
+    /** 刷新后只更新令牌部分，账号身份保持不变。 */
+    fun updateTokens(
         region: Region,
-        clientId: String,
-        clientSecret: String,
         accessToken: String,
-        expiresInSec: Long,
+        refreshToken: String,
+        expiresAt: Long,
+        refreshExpiresAt: Long,
     ) {
         prefs.edit()
-            .putString(keyClientId(region), clientId)
-            .putString(keyClientSecret(region), clientSecret)
             .putString(keyAccess(region), accessToken)
-            .putLong(keyExpires(region), System.currentTimeMillis() + expiresInSec * 1000L)
-            .remove(keyApiKey(region))
+            .putString(keyRefresh(region), refreshToken)
+            .putLong(keyExpires(region), expiresAt)
+            .putLong(keyRefreshExpires(region), refreshExpiresAt)
             .apply()
     }
 
-    /** 重新换到 access_token 后只更新令牌，不动 Client 凭证。 */
-    fun updateAccessToken(region: Region, accessToken: String, expiresInSec: Long) {
-        prefs.edit()
-            .putString(keyAccess(region), accessToken)
-            .putLong(keyExpires(region), System.currentTimeMillis() + expiresInSec * 1000L)
-            .apply()
-    }
-
-    fun apiKey(region: Region): String? = prefs.getString(keyApiKey(region), null)
-
-    fun clientId(region: Region): String? = prefs.getString(keyClientId(region), null)
-
-    fun clientSecret(region: Region): String? = prefs.getString(keyClientSecret(region), null)
-
-    fun accessToken(region: Region): String? = prefs.getString(keyAccess(region), null)
-
-    fun mode(region: Region): AuthMode = when {
-        !apiKey(region).isNullOrBlank() -> AuthMode.API_KEY
-        !accessToken(region).isNullOrBlank() -> AuthMode.CLIENT_CREDENTIALS
-        else -> AuthMode.NONE
-    }
-
-    /** 仅企业凭证模式有 access_token，才有「过期」一说。 */
     fun account(region: Region): Account? {
-        val access = accessToken(region) ?: return null
+        val access = prefs.getString(keyAccess(region), null)?.takeIf { it.isNotBlank() }
+            ?: return null
         return Account(
             region = region,
             accessToken = access,
+            refreshToken = prefs.getString(keyRefresh(region), null).orEmpty(),
             expiresAt = prefs.getLong(keyExpires(region), 0L),
+            refreshExpiresAt = prefs.getLong(keyRefreshExpires(region), 0L),
+            domain = prefs.getString(keyDomain(region), null).orEmpty()
+                .ifBlank { region.apiDomain },
+            uid = prefs.getString(keyUid(region), null).orEmpty(),
+            enterpriseId = prefs.getString(keyEnterprise(region), null).orEmpty(),
         )
     }
 
-    fun isLoggedIn(region: Region): Boolean = mode(region) != AuthMode.NONE
+    fun isLoggedIn(region: Region): Boolean = account(region) != null
 
-    /** 过期前 60s 视为需要重新换取。 */
+    /** 过期前 5 分钟视为需要刷新；过期时间未知时不主动刷新。 */
     fun needsRefresh(region: Region): Boolean {
         val expiresAt = prefs.getLong(keyExpires(region), 0L)
-        if (expiresAt == 0L) return false
-        return System.currentTimeMillis() > expiresAt - REFRESH_AHEAD_MS
+        if (expiresAt <= 0L) return false
+        return System.currentTimeMillis() >= expiresAt - REFRESH_AHEAD_MS
     }
 
     fun clear(region: Region) {
         prefs.edit()
-            .remove(keyApiKey(region))
-            .remove(keyClientId(region))
-            .remove(keyClientSecret(region))
             .remove(keyAccess(region))
+            .remove(keyRefresh(region))
             .remove(keyExpires(region))
+            .remove(keyRefreshExpires(region))
+            .remove(keyDomain(region))
+            .remove(keyUid(region))
+            .remove(keyEnterprise(region))
             .apply()
     }
 
-    /** 稳定的设备指纹，首次生成后不再变化。 */
-    fun deviceId(): String {
-        prefs.getString(KEY_DEVICE_ID, null)?.let { return it }
-        val generated = UUID.randomUUID().toString().replace("-", "")
-        prefs.edit().putString(KEY_DEVICE_ID, generated).apply()
-        return generated
-    }
-
-    private fun keyApiKey(region: Region) = "api_key_${region.id}"
-    private fun keyClientId(region: Region) = "client_id_${region.id}"
-    private fun keyClientSecret(region: Region) = "client_secret_${region.id}"
     private fun keyAccess(region: Region) = "access_${region.id}"
+    private fun keyRefresh(region: Region) = "refresh_${region.id}"
     private fun keyExpires(region: Region) = "expires_${region.id}"
+    private fun keyRefreshExpires(region: Region) = "refresh_expires_${region.id}"
+    private fun keyDomain(region: Region) = "domain_${region.id}"
+    private fun keyUid(region: Region) = "uid_${region.id}"
+    private fun keyEnterprise(region: Region) = "enterprise_${region.id}"
 
     private companion object {
         const val PREFS_NAME = "wbhub_credentials"
-        const val KEY_DEVICE_ID = "device_id"
-        const val REFRESH_AHEAD_MS = 60_000L
+        const val REFRESH_AHEAD_MS = 5 * 60_000L
     }
 }
