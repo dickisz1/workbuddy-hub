@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WorkBuddy Hub</string>
+    <string name="tab_credential">凭证</string>
+    <string name="tab_platform">API 平台</string>
+    <string name="tab_chat">对话</string>
+
+    <string name="credential_title">账号凭证</string>
+    <string name="credential_region_cn">国内版</string>
+    <string name="credential_region_intl">国际版</string>
+    <string name="credential_login">登录</string>
+    <string name="credential_logout">退出登录</string>
+    <string name="credential_refresh">刷新 Token</string>
+    <string name="credential_status_idle">未登录</string>
+    <string name="credential_hint">登录会打开系统浏览器完成官方 OAuth 授权，回调后凭证加密保存在本机。</string>
+
+    <string name="platform_title">本地转发服务</string>
+    <string name="platform_enable">启动转发服务</string>
+    <string name="platform_port">监听端口</string>
+    <string name="platform_secret">共享密钥</string>
+    <string name="platform_overlay">悬浮窗保活</string>
+    <string name="platform_apply">应用端口与密钥</string>
+    <string name="platform_models">拉取模型列表</string>
+    <string name="platform_log_title">调用日志</string>
+
+    <string name="chat_title">内置对话</string>
+    <string name="chat_hint">输入消息（使用当前账号的模型）</string>
+    <string name="chat_model">模型（留空使用默认）</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_need_login">请先在「凭证」页完成登录</string>
+
+    <string name="notif_channel_name">转发服务</string>
+    <string name="notif_channel_desc">保持本地 OpenAI 兼容代理常驻</string>
+    <string name="notif_title">WorkBuddy Hub 运行中</string>
+    <string name="notif_text">本地代理已监听 127.0.0.1:%1$d</string>
+
+    <string name="overlay_text">WB Hub 转发中</string>
+</resources>
