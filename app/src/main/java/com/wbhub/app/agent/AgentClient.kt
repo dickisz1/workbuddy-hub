@@ -4,6 +4,7 @@ import android.content.Context
 import com.wbhub.app.proto.CredentialStore
 import com.wbhub.app.proto.Region
 import com.wbhub.app.proto.UpstreamClient
+import com.wbhub.app.proto.Wire
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -33,6 +34,10 @@ class AgentClient(
 
     private data class StreamResult(val content: String, val toolCalls: List<ToolCall>)
 
+    /** 会话 id 在进程内固定，上游据此归并用量；一次发送内所有轮次复用同一个请求 id。 */
+    private val conversationId: String by lazy { digest("wbhub|${java.util.UUID.randomUUID()}") }
+    private var requestSeq = 0
+
     suspend fun ask(
         region: Region,
         model: String,
@@ -46,6 +51,7 @@ class AgentClient(
             .put(systemMessage())
             .put(JSONObject().put("role", "user").put("content", prompt))
 
+        val requestId = digest("$conversationId|${++requestSeq}|$prompt")
         var round = 0
         while (round++ < MAX_ROUNDS) {
             val request = JSONObject()
@@ -54,7 +60,7 @@ class AgentClient(
                 .put("messages", messages)
                 .put("tools", tools.openAiSchemas())
 
-            val result = streamOnce(region, request, onEvent)
+            val result = streamOnce(region, request, round, requestId, messages.length(), onEvent)
             if (result.toolCalls.isEmpty()) return@withContext result.content
 
             messages.put(
@@ -77,18 +83,41 @@ class AgentClient(
         return@withContext "已达到最大工具调用轮数（$MAX_ROUNDS）"
     }
 
-    private fun streamOnce(region: Region, request: JSONObject, onEvent: (String) -> Unit): StreamResult {
+    private fun streamOnce(
+        region: Region,
+        request: JSONObject,
+        round: Int,
+        requestId: String,
+        messageCount: Int,
+        onEvent: (String) -> Unit,
+    ): StreamResult {
         val payload = request.toString().toByteArray(Charsets.UTF_8)
         val content = StringBuilder()
         val builders: MutableMap<Int, ToolCallBuilder> = TreeMap()
         val pending = StringBuilder()
-        var error: String? = null
+        val errorBody = StringBuilder()
+        var errorStatus = 0
+        var retryAfter = ""
 
         upstream.streamChat(
             region = region,
             body = payload,
-            onStatus = { code, _ -> if (code !in 200..299) error = "上游返回 HTTP $code" },
+            onStatus = { code, headers ->
+                if (code !in 200..299) {
+                    errorStatus = code
+                    retryAfter = headers.entries
+                        .firstOrNull { it.key?.equals("Retry-After", ignoreCase = true) == true }
+                        ?.value?.firstOrNull().orEmpty()
+                }
+            },
             onChunk = { bytes, length ->
+                // 非 2xx 时把响应体当纯文本收，用于报错原文
+                if (errorStatus != 0) {
+                    if (errorBody.length < ERROR_BODY_LIMIT) {
+                        errorBody.append(String(bytes, 0, length, Charsets.UTF_8))
+                    }
+                    return@streamChat
+                }
                 pending.append(String(bytes, 0, length, Charsets.UTF_8))
                 var index = pending.indexOf("\n")
                 while (index >= 0) {
@@ -98,9 +127,17 @@ class AgentClient(
                     index = pending.indexOf("\n")
                 }
             },
+            extraHeaders = Wire.conversationHeaders(
+                conversationId = conversationId,
+                conversationRequestId = requestId,
+                conversationMessageId = digest("$requestId|$round"),
+                requestId = digest("$requestId|$round|$messageCount"),
+            ),
         )
         if (pending.isNotEmpty()) consumeSseLine(pending.toString().trim(), content, builders, onEvent)
-        error?.let { if (content.isEmpty() && builders.isEmpty()) throw IllegalStateException(it) }
+        if (errorStatus != 0 && content.isEmpty() && builders.isEmpty()) {
+            throw IllegalStateException(describeError(errorStatus, retryAfter, errorBody.toString()))
+        }
 
         val calls = builders.values.map { builder ->
             ToolCall(
@@ -111,6 +148,31 @@ class AgentClient(
         }
         return StreamResult(content.toString(), calls)
     }
+
+    /**
+     * 把上游状态码翻成能直接照做的提示。
+     *
+     * 429 是上游限流，免费额度模型（如 hy3）通常有并发数与频次上限，换模型或等一会儿都能缓解；
+     * 具体原因以响应体原文为准，所以这里原样带上（截断，避免刷屏）。
+     */
+    private fun describeError(code: Int, retryAfter: String, body: String): String {
+        val detail = body.replace(Regex("\\s+"), " ").trim().take(ERROR_BODY_LIMIT)
+        val suffix = if (detail.isEmpty()) "" else "；上游原文：$detail"
+        return when (code) {
+            429 -> "上游限流（HTTP 429）" +
+                (if (retryAfter.isNotBlank()) "，建议 $retryAfter 秒后再试" else "，请等几秒再试或换一个模型") +
+                suffix
+            401, 403 -> "上游拒绝访问（HTTP $code），令牌可能已失效，请到凭证页刷新 Token$suffix"
+            else -> "上游返回 HTTP $code$suffix"
+        }
+    }
+
+    /** 定长 id，取 SHA-256 前 32 位十六进制。 */
+    private fun digest(input: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(input.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(32)
 
     private fun consumeSseLine(
         line: String,
@@ -166,5 +228,7 @@ class AgentClient(
 
     private companion object {
         const val MAX_ROUNDS = 6
+        /** 报错原文最多保留的字符数，够看出上游给的原因又不至于刷屏。 */
+        const val ERROR_BODY_LIMIT = 300
     }
 }

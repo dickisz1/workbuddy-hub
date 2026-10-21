@@ -313,7 +313,7 @@ App 每次进程启动时（API 平台页首次 `onResume`）请求
 | --- | --- |
 | applicationId / namespace | `com.wbhub.app` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
-| versionCode / versionName | 60 / 0.6.0 |
+| versionCode / versionName | 61 / 0.6.1 |
 | Java / Kotlin JVM target | 17 |
 | 主要依赖 | AndroidX Core、AppCompat、Material、Fragment、Coroutines、Security-Crypto |
 
@@ -370,6 +370,7 @@ app/src/main/
 
 | 版本 | 要点 |
 | --- | --- |
+| 0.6.1 | 内置对话补会话头；429/401 报错带上游原文与 `Retry-After`，不再只显示状态码 |
 | 0.6.0 | 应用内自动更新（比对 `version.json`、下载 APK、拉起安装器）；CI 发布 `version.json` |
 | 0.5.0 | `stream:false` 请求在本地把 SSE 聚合成单条 `chat.completion`，修复非流式客户端首字符解析失败 |
 | 0.4.0 | 凭证改为 WorkBuddy 原生浏览器登录流程；新增 refreshToken 静默续期；模型列表按 `agents[cli].models` 解析 |
