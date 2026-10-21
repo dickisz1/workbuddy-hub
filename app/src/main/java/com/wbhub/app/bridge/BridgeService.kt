@@ -107,7 +107,7 @@ class BridgeService : Service() {
     }
 
     private fun attachOverlay() {
-        if (overlay == null) overlay = BridgeOverlay(this)
+        if (overlay == null) overlay = BridgeOverlay(this, credentials, prefs)
         overlay?.show()
     }
 

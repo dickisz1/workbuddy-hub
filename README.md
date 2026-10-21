@@ -292,9 +292,34 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 | 手段 | 实现 | 说明 |
 | --- | --- | --- |
 | 前台服务 | `foregroundServiceType="specialUse"` + 常驻通知 | 需 `FOREGROUND_SERVICE_SPECIAL_USE`，Manifest 内已声明子类型 |
-| 悬浮窗 | `TYPE_APPLICATION_OVERLAY` 小标签 | 让系统认为 App 仍可见，提升进程优先级；需用户授权 |
+| 悬浮窗 | `TYPE_APPLICATION_OVERLAY` 状态看板 | 让系统认为 App 仍可见，提升进程优先级；同时每秒刷新运行状态，需用户授权 |
 | 定时任务 | 服务内协程，每 6 小时 | 对每个已登录区域执行每日签到 |
 | 自恢复 | `START_STICKY` | 被系统杀掉后尝试重启 |
+
+### 7.1 悬浮窗显示什么
+
+每秒刷新一次，读 [BridgeStats](file:///workspace/app/src/main/java/com/wbhub/app/bridge/BridgeStats.kt)：
+
+```
+WB Hub · 监听 :8765
+状态：转发中 ×1
+网络：正常
+今日 12 次 · 错误 1
+最近 09:47:12 hy3 · 200 · 820ms
+调用方 Chrome
+```
+
+| 行 | 数据来源 | 取值 |
+| --- | --- | --- |
+| 第一行 | `BridgeService.running` + 已保存端口 | `监听 :8765` / `未启动` |
+| 状态 | 服务状态 → 凭证 → 网络 → 并发数 | `服务未启动` / `上游未登录` / `网络断开` / `转发中 ×N` / `空闲` |
+| 网络 | `ConnectivityManager` 的 `NET_CAPABILITY_VALIDATED` | `正常` / `已断开（上游不可达）` |
+| 今日 | 当日调用总数与错误数，跨天自动清零 | 只统计 `/v1/chat/completions` |
+| 最近 | 上一次完成的调用 | 时间、模型、上游状态码、耗时 |
+| 调用方 | 请求头 `User-Agent` 归类 | `curl` / `Python` / `OkHttp` / `Chrome` / `本机 App` 等 |
+| 最近错误 | 最近一次非 2xx | 如 `HTTP 429` |
+
+**能力边界**：本地 HTTP 只能看到 `User-Agent`，看不到调用方的应用包名，所以「哪个 App 在调用」只能显示到 UA 归类的粒度。要精确到包名需要抓包或读 `/proc/net`，权限与代价都不合适，未实现。
 
 自动任务调用：
 
@@ -357,7 +382,7 @@ App 每次进程启动时（API 平台页首次 `onResume`）请求
 | --- | --- |
 | applicationId / namespace | `com.wbhub.app` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
-| versionCode / versionName | 64 / 0.6.4 |
+| versionCode / versionName | 65 / 0.6.5 |
 | Java / Kotlin JVM target | 17 |
 | 主要依赖 | AndroidX Core、AppCompat、Material、Fragment、Coroutines、Security-Crypto |
 
@@ -414,6 +439,7 @@ app/src/main/
 
 | 版本 | 要点 |
 | --- | --- |
+| 0.6.5 | 悬浮窗从静态标签改为状态看板：监听状态、转发中/断网/未登录、今日调用与错误、最近一次调用、调用方 UA |
 | 0.6.4 | 端点信息旁加「复制端点 / 复制密钥 / 复制全部」，配置客户端时不必手抄 |
 | 0.6.3 | 调用日志记上游原文、失败请求也留痕、页面每 2 秒自动刷新；内置对话同样入日志 |
 | 0.6.2 | 固定签名（仓库内 keystore），修复「软件包与现有软件包存在冲突」导致无法覆盖安装 |

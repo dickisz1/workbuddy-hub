@@ -132,6 +132,8 @@ class BridgeServer(
 
     private fun handleChat(request: Request, out: OutputStream) {
         val started = System.currentTimeMillis()
+        // 悬浮窗要显示的「谁在调用」：本地只能拿到 UA，拿不到对方包名
+        BridgeStats.begin(BridgeStats.describeClient(request.headers["user-agent"]))
         // ② 解析请求体（按字节读入，UTF-8 解码仅用于结构改写）
         val rewritten = rewriteChatBody(request.body)
         if (rewritten == null) {
@@ -180,7 +182,9 @@ class BridgeServer(
                 raw = result.raw.take(CallLogStore.RAW_LIMIT),
             ),
         )
-        emit("转发 $model → ${result.status} (${System.currentTimeMillis() - started}ms)")
+        val elapsed = System.currentTimeMillis() - started
+        BridgeStats.finish(model, result.status, elapsed, result.note)
+        emit("转发 $model → ${result.status} (${elapsed}ms)")
     }
 
     /** 请求在到达上游前就失败（或中途异常）时也写一条记录，便于核对。 */
@@ -192,6 +196,7 @@ class BridgeServer(
         region: String = resolveRegion(request).id,
         model: String = "-",
     ) {
+        val elapsed = System.currentTimeMillis() - started
         callLog.append(
             CallRecord(
                 time = started,
@@ -199,7 +204,7 @@ class BridgeServer(
                 region = region,
                 model = model,
                 status = status,
-                durationMs = System.currentTimeMillis() - started,
+                durationMs = elapsed,
                 promptTokens = 0,
                 completionTokens = 0,
                 credits = null,
@@ -207,6 +212,7 @@ class BridgeServer(
                 raw = null,
             ),
         )
+        BridgeStats.finish(model, status, elapsed, note)
     }
 
     /** `stream:true`：上游 SSE 字节原样透传。 */

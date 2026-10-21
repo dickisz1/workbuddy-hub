@@ -11,8 +11,8 @@ android {
         applicationId = "com.wbhub.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 64
-        versionName = "0.6.4"
+        versionCode = 65
+        versionName = "0.6.5"
     }
 
     /**

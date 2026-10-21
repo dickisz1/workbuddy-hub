@@ -53,5 +53,5 @@
     <string name="notif_title">WorkBuddy Hub 运行中</string>
     <string name="notif_text">本地代理已监听 127.0.0.1:%1$d</string>
 
-    <string name="overlay_text">WB Hub 转发中</string>
+    <string name="overlay_text">WB Hub 状态</string>
 </resources>
