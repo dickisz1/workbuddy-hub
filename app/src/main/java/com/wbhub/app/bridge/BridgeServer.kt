@@ -125,12 +125,17 @@ class BridgeServer(
         val promptTokens: Int,
         val completionTokens: Int,
         val credits: String?,
+        /** 上游响应原文（SSE 帧 / 错误体），按 [CallLogStore.RAW_LIMIT] 截断。 */
+        val raw: String,
+        val note: String? = null,
     )
 
     private fun handleChat(request: Request, out: OutputStream) {
+        val started = System.currentTimeMillis()
         // ② 解析请求体（按字节读入，UTF-8 解码仅用于结构改写）
         val rewritten = rewriteChatBody(request.body)
         if (rewritten == null) {
+            logFailure(request, 400, "请求体不是合法的 JSON", started)
             sendError(out, 400, "请求体不是合法的 JSON")
             return
         }
@@ -138,34 +143,70 @@ class BridgeServer(
 
         val region = resolveRegion(request)
         if (!credentials.isLoggedIn(region)) {
-            sendError(out, 401, "该区域（${region.displayName}）尚未登录，请先在凭证页完成浏览器登录")
+            val message = "该区域（${region.displayName}）尚未登录，请先在凭证页完成浏览器登录"
+            logFailure(request, 401, message, started, region.id, json.optString("model", "unknown"))
+            sendError(out, 401, message)
             return
         }
 
         val model = json.optString("model", "unknown")
         val sessionHeaders = deriveConversationHeaders(request, json)
-        val started = System.currentTimeMillis()
 
         // ③④⑤ 转发：补身份头与 access_token 由 UpstreamClient 统一完成
-        val result = if (wantsStream) {
-            forwardStreaming(region, payload, out, sessionHeaders, model)
-        } else {
-            forwardBuffered(region, payload, out, sessionHeaders, model)
+        val result = try {
+            if (wantsStream) {
+                forwardStreaming(region, payload, out, sessionHeaders, model)
+            } else {
+                forwardBuffered(region, payload, out, sessionHeaders, model)
+            }
+        } catch (e: Exception) {
+            // 客户端断开、上游挂断等：仍要留痕，否则日志里看不到这次调用
+            logFailure(request, 0, e.message ?: e.javaClass.simpleName, started, region.id, model)
+            return
         }
 
         callLog.append(
             CallRecord(
                 time = started,
+                kind = CallLogStore.KIND_API,
                 region = region.id,
                 model = model,
                 status = result.status,
+                durationMs = System.currentTimeMillis() - started,
                 promptTokens = result.promptTokens,
                 completionTokens = result.completionTokens,
                 credits = result.credits,
-                note = null,
+                note = result.note,
+                raw = result.raw.take(CallLogStore.RAW_LIMIT),
             ),
         )
         emit("转发 $model → ${result.status} (${System.currentTimeMillis() - started}ms)")
+    }
+
+    /** 请求在到达上游前就失败（或中途异常）时也写一条记录，便于核对。 */
+    private fun logFailure(
+        request: Request,
+        status: Int,
+        note: String,
+        started: Long,
+        region: String = resolveRegion(request).id,
+        model: String = "-",
+    ) {
+        callLog.append(
+            CallRecord(
+                time = started,
+                kind = CallLogStore.KIND_API,
+                region = region,
+                model = model,
+                status = status,
+                durationMs = System.currentTimeMillis() - started,
+                promptTokens = 0,
+                completionTokens = 0,
+                credits = null,
+                note = note,
+                raw = null,
+            ),
+        )
     }
 
     /** `stream:true`：上游 SSE 字节原样透传。 */
@@ -178,6 +219,7 @@ class BridgeServer(
     ): ForwardResult {
         var status = 0
         val usageTail = StringBuilder()
+        val rawTail = StringBuilder()
         val credits = arrayOfNulls<String>(1)
 
         upstream.streamChat(
@@ -191,6 +233,10 @@ class BridgeServer(
             onChunk = { bytes, length ->
                 out.write(bytes, 0, length)
                 out.flush()
+                // 原文单独留一份写进调用日志，方便逐帧核对
+                if (rawTail.length < CallLogStore.RAW_LIMIT) {
+                    rawTail.append(String(bytes, 0, length, Charsets.UTF_8))
+                }
                 // 只保留尾部少量文本用于事后统计 usage
                 if (usageTail.length < USAGE_TAIL_LIMIT) {
                     usageTail.append(String(bytes, 0, length, Charsets.UTF_8))
@@ -200,7 +246,12 @@ class BridgeServer(
         )
 
         val (promptTokens, completionTokens) = parseUsage(usageTail.toString())
-        return ForwardResult(status, promptTokens, completionTokens, credits[0])
+        val note = when {
+            status == 0 -> "上游无响应"
+            status !in 200..299 -> "上游拒绝"
+            else -> null
+        }
+        return ForwardResult(status, promptTokens, completionTokens, credits[0], rawTail.toString(), note)
     }
 
     /**
@@ -235,7 +286,8 @@ class BridgeServer(
         if (status !in 200..299) {
             // 上游错误体本身是 JSON，原样回传，避免包装后丢掉上游错误码
             sendRawJson(out, status, text, credits[0])
-            return ForwardResult(status, 0, 0, credits[0])
+            val note = if (status == 0) "上游无响应" else "上游拒绝"
+            return ForwardResult(status, 0, 0, credits[0], text, note)
         }
 
         val completion = aggregateCompletion(text, model)
@@ -246,6 +298,7 @@ class BridgeServer(
             promptTokens = usage?.optInt("prompt_tokens") ?: 0,
             completionTokens = usage?.optInt("completion_tokens") ?: 0,
             credits = credits[0],
+            raw = text,
         )
     }
 

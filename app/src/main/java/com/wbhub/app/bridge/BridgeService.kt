@@ -174,13 +174,16 @@ class BridgeService : Service() {
         callLog.append(
             CallRecord(
                 time = System.currentTimeMillis(),
+                kind = CallLogStore.KIND_SERVICE,
                 region = "",
                 model = "-",
                 status = 0,
+                durationMs = 0,
                 promptTokens = 0,
                 completionTokens = 0,
                 credits = null,
                 note = message,
+                raw = null,
             ),
         )
     }

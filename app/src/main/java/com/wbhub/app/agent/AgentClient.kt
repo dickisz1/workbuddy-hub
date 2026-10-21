@@ -1,6 +1,8 @@
 package com.wbhub.app.agent
 
 import android.content.Context
+import com.wbhub.app.bridge.CallLogStore
+import com.wbhub.app.bridge.CallRecord
 import com.wbhub.app.proto.CredentialStore
 import com.wbhub.app.proto.Region
 import com.wbhub.app.proto.UpstreamClient
@@ -22,6 +24,7 @@ class AgentClient(
     private val credentials: CredentialStore,
     private val upstream: UpstreamClient,
     private val tools: AgentTools = AgentTools(context),
+    private val callLog: CallLogStore = CallLogStore(context.applicationContext),
 ) {
 
     data class ToolCall(val id: String, val name: String, val arguments: JSONObject)
@@ -92,10 +95,12 @@ class AgentClient(
         onEvent: (String) -> Unit,
     ): StreamResult {
         val payload = request.toString().toByteArray(Charsets.UTF_8)
+        val startedAt = System.currentTimeMillis()
         val content = StringBuilder()
         val builders: MutableMap<Int, ToolCallBuilder> = TreeMap()
         val pending = StringBuilder()
         val errorBody = StringBuilder()
+        val rawTail = StringBuilder()
         var errorStatus = 0
         var retryAfter = ""
 
@@ -111,14 +116,15 @@ class AgentClient(
                 }
             },
             onChunk = { bytes, length ->
+                val text = String(bytes, 0, length, Charsets.UTF_8)
+                // 原文留一份进调用日志：能直接看出哪句是上游 content、哪句是本地 [tool] 标记
+                if (rawTail.length < CallLogStore.RAW_LIMIT) rawTail.append(text)
                 // 非 2xx 时把响应体当纯文本收，用于报错原文
                 if (errorStatus != 0) {
-                    if (errorBody.length < ERROR_BODY_LIMIT) {
-                        errorBody.append(String(bytes, 0, length, Charsets.UTF_8))
-                    }
+                    if (errorBody.length < ERROR_BODY_LIMIT) errorBody.append(text)
                     return@streamChat
                 }
-                pending.append(String(bytes, 0, length, Charsets.UTF_8))
+                pending.append(text)
                 var index = pending.indexOf("\n")
                 while (index >= 0) {
                     val line = pending.substring(0, index).trim()
@@ -135,9 +141,6 @@ class AgentClient(
             ),
         )
         if (pending.isNotEmpty()) consumeSseLine(pending.toString().trim(), content, builders, onEvent)
-        if (errorStatus != 0 && content.isEmpty() && builders.isEmpty()) {
-            throw IllegalStateException(describeError(errorStatus, retryAfter, errorBody.toString()))
-        }
 
         val calls = builders.values.map { builder ->
             ToolCall(
@@ -146,7 +149,43 @@ class AgentClient(
                 arguments = runCatching { JSONObject(builder.arguments.toString()) }.getOrElse { JSONObject() },
             )
         }
+        val (promptTokens, completionTokens) = parseUsage(rawTail.toString())
+        callLog.append(
+            CallRecord(
+                time = startedAt,
+                kind = CallLogStore.KIND_CHAT,
+                region = region.id,
+                model = request.optString("model", "unknown"),
+                status = if (errorStatus != 0) errorStatus else 200,
+                durationMs = System.currentTimeMillis() - startedAt,
+                promptTokens = promptTokens,
+                completionTokens = completionTokens,
+                credits = null,
+                note = if (calls.isEmpty()) null else "工具调用 ${calls.size} 个（第 ${round + 1} 轮）",
+                raw = rawTail.toString().take(CallLogStore.RAW_LIMIT),
+            ),
+        )
+
+        if (errorStatus != 0 && content.isEmpty() && builders.isEmpty()) {
+            throw IllegalStateException(describeError(errorStatus, retryAfter, errorBody.toString()))
+        }
         return StreamResult(content.toString(), calls)
+    }
+
+    /** 从 SSE 原文里取最后一处 `usage`，上游只在末帧给。 */
+    private fun parseUsage(raw: String): Pair<Int, Int> {
+        var prompt = 0
+        var completion = 0
+        raw.lineSequence().forEach { line ->
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("data:")) return@forEach
+            val frame = runCatching { JSONObject(trimmed.removePrefix("data:").trim()) }.getOrNull()
+                ?: return@forEach
+            val usage = frame.optJSONObject("usage") ?: return@forEach
+            prompt = usage.optInt("prompt_tokens", prompt)
+            completion = usage.optInt("completion_tokens", completion)
+        }
+        return prompt to completion
     }
 
     /**

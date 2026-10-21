@@ -84,10 +84,25 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
     override fun onResume() {
         super.onResume()
         renderLog()
+        // 停留在本页时定时刷新，否则新调用要等切页面才出现
+        view?.removeCallbacks(logTicker)
+        view?.postDelayed(logTicker, LOG_REFRESH_MS)
         overlaySwitch.isChecked = prefs.overlayEnabled
         if (!autoChecked) {
             autoChecked = true
             checkForUpdate(silent = true)
+        }
+    }
+
+    override fun onPause() {
+        view?.removeCallbacks(logTicker)
+        super.onPause()
+    }
+
+    private val logTicker = object : Runnable {
+        override fun run() {
+            renderLog()
+            view?.postDelayed(this, LOG_REFRESH_MS)
         }
     }
 
@@ -246,6 +261,7 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
         const val MIN_PORT = 1024
         const val MAX_PORT = 65535
         const val RESTART_DELAY_MS = 300L
-        const val LOG_LINES = 30
+        const val LOG_LINES = 40
+        const val LOG_REFRESH_MS = 2000L
     }
 }
