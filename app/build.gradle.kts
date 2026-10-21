@@ -11,8 +11,26 @@ android {
         applicationId = "com.wbhub.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 61
-        versionName = "0.6.1"
+        versionCode = 62
+        versionName = "0.6.2"
+    }
+
+    /**
+     * 固定签名。
+     *
+     * 之前 debug 包用的是构建机自动生成的临时 keystore，CI 每次跑都是新的，导致
+     * 「软件包与现有软件包存在冲突」（签名不一致）而无法覆盖安装，应用内自动更新也失效。
+     * 这个 keystore 提交在仓库里，debug 与 release 共用，保证同一包名始终同一签名。
+     *
+     * 只用于自用分发自签，不构成任何信任背书；密码随仓库公开。
+     */
+    signingConfigs {
+        create("stable") {
+            storeFile = rootProject.file("keystore/wbhub.jks")
+            storePassword = "wbhub-local"
+            keyAlias = "wbhub"
+            keyPassword = "wbhub-local"
+        }
     }
 
     buildTypes {
@@ -22,9 +40,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.getByName("stable")
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
         }
     }
 

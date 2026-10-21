@@ -307,13 +307,30 @@ App 每次进程启动时（API 平台页首次 `onResume`）请求
 - **无法静默安装**。Android 要求用户在系统弹窗里确认，App 只能把安装器拉起来
 - 下载源是 `github.com`，国内网络需代理；失败时界面提示「下载失败，请检查网络或 VPN 后重试」
 
+### 签名
+
+`keystore/wbhub.jks` 提交在仓库里，debug 与 release 共用同一签名。
+
+这是自动更新能覆盖安装的前提：debug 包默认用构建机自动生成的临时 keystore，CI 每次构建都不同，安装时会报「软件包与现有软件包存在冲突（签名异常）」。
+
+| 项 | 值 |
+| --- | --- |
+| 别名 | `wbhub` |
+| 口令 | `wbhub-local`（store 与 key 相同） |
+| 证书 SHA-256 | `5B:75:B2:97:A1:9A:8E:8F:CD:69:78:94:F3:AC:F7:AB:B0:F0:F3:2E:EE:05:DF:9C:EC:61:C4:74:25:00:60:1D` |
+| 有效期 | 至 2056-10-13 |
+
+只用于自用分发自签，不构成任何信任背书；密码随仓库公开。
+
+> 从临时签名版本迁移：**必须先卸载旧版再装 0.6.2**，否则签名冲突无法覆盖。卸载会清掉凭证，需要重新浏览器登录一次；此后签名固定，不再有这个问题。
+
 ### 工程配置
 
 | 项 | 值 |
 | --- | --- |
 | applicationId / namespace | `com.wbhub.app` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
-| versionCode / versionName | 61 / 0.6.1 |
+| versionCode / versionName | 62 / 0.6.2 |
 | Java / Kotlin JVM target | 17 |
 | 主要依赖 | AndroidX Core、AppCompat、Material、Fragment、Coroutines、Security-Crypto |
 
@@ -370,6 +387,7 @@ app/src/main/
 
 | 版本 | 要点 |
 | --- | --- |
+| 0.6.2 | 固定签名（仓库内 keystore），修复「软件包与现有软件包存在冲突」导致无法覆盖安装 |
 | 0.6.1 | 内置对话补会话头；429/401 报错带上游原文与 `Retry-After`，不再只显示状态码 |
 | 0.6.0 | 应用内自动更新（比对 `version.json`、下载 APK、拉起安装器）；CI 发布 `version.json` |
 | 0.5.0 | `stream:false` 请求在本地把 SSE 聚合成单条 `chat.completion`，修复非流式客户端首字符解析失败 |
