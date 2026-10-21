@@ -191,9 +191,9 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/v1/chat/completions` | 对话，强制流式（SSE） |
+| `POST` | `/v1/chat/completions` | 对话，按请求的 `stream` 返回 SSE 或单条 JSON |
 | `GET` | `/v1/models` | 模型 id 列表 |
-| `GET` | `/health` | 存活检查，返回 `{"status":"ok"}` |
+| `GET` | `/health` | 存活检查，返回 `{"status":"ok"}`（同样需要密钥） |
 | `OPTIONS` | 任意 | CORS 预检，返回 204 |
 
 未实现 `/v1/responses`、`/v1/messages`、`/v1/embeddings` 等，一律 404。
@@ -214,17 +214,21 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 
 | 改写 | 原因 |
 | --- | --- |
-| 强制 `stream = true` | 上游只支持流式；客户端请求非流式也会收到 SSE |
+| `stream` 恒置 `true` 发给上游 | 上游只支持流式；客户端要非流式时由本地聚合，见 5.4 |
 | `developer` 角色 → `system` | 上游不认识 `developer` |
 | 删除 `stream_options` / `logprobs` / `top_logprobs` | 上游不接受 |
 | 其余字段（含多模态内容） | 原样透传 |
 
 ### 5.4 响应
 
-- 响应头：`Content-Type: text/event-stream; charset=utf-8`、`Cache-Control: no-cache`、`Connection: close`
-- 透传上游状态码与 `X-Credits-Consumed`（本次消耗积分）
-- 字节流不做任何解码/重编码，`[DONE]`、`usage` 帧原样到达客户端
-- 本地不缓存、不改写模型输出
+两种形态，由请求里的 `stream` 决定：
+
+- **`stream: true`**：`Content-Type: text/event-stream`，上游字节原样透传，`[DONE]`、`usage` 帧不改写
+- **`stream: false`（或缺省）**：本地把 SSE 增量聚合成单条 `chat.completion` 再返回
+  `Content-Type: application/json`；`content` 拼接、`reasoning_content` 单列、
+  `tool_calls` 按 `index` 归并（`arguments` 逐帧拼接）、`finish_reason` 与 `usage` 取末帧
+
+上游错误体（非 2xx）原样回传，避免包装后丢掉上游错误码。响应头含 `X-Credits-Consumed`（本次消耗积分）。本地不缓存、不改写模型输出。
 
 ### 5.5 会话头派生（推断实现）
 

@@ -119,6 +119,14 @@ class BridgeServer(
         }
     }
 
+    /** 一次转发的统计结果，用于写调用记录。 */
+    private data class ForwardResult(
+        val status: Int,
+        val promptTokens: Int,
+        val completionTokens: Int,
+        val credits: String?,
+    )
+
     private fun handleChat(request: Request, out: OutputStream) {
         // ② 解析请求体（按字节读入，UTF-8 解码仅用于结构改写）
         val rewritten = rewriteChatBody(request.body)
@@ -126,7 +134,7 @@ class BridgeServer(
             sendError(out, 400, "请求体不是合法的 JSON")
             return
         }
-        val (json, payload) = rewritten
+        val (json, payload, wantsStream) = rewritten
 
         val region = resolveRegion(request)
         if (!credentials.isLoggedIn(region)) {
@@ -135,20 +143,49 @@ class BridgeServer(
         }
 
         val model = json.optString("model", "unknown")
+        val sessionHeaders = deriveConversationHeaders(request, json)
         val started = System.currentTimeMillis()
+
+        // ③④⑤ 转发：补身份头与 access_token 由 UpstreamClient 统一完成
+        val result = if (wantsStream) {
+            forwardStreaming(region, payload, out, sessionHeaders, model)
+        } else {
+            forwardBuffered(region, payload, out, sessionHeaders, model)
+        }
+
+        callLog.append(
+            CallRecord(
+                time = started,
+                region = region.id,
+                model = model,
+                status = result.status,
+                promptTokens = result.promptTokens,
+                completionTokens = result.completionTokens,
+                credits = result.credits,
+                note = null,
+            ),
+        )
+        emit("转发 $model → ${result.status} (${System.currentTimeMillis() - started}ms)")
+    }
+
+    /** `stream:true`：上游 SSE 字节原样透传。 */
+    private fun forwardStreaming(
+        region: Region,
+        payload: ByteArray,
+        out: OutputStream,
+        sessionHeaders: Map<String, String>,
+        model: String,
+    ): ForwardResult {
         var status = 0
         val usageTail = StringBuilder()
         val credits = arrayOfNulls<String>(1)
 
-        // ③④⑤ 转发：补身份头与 access_token 由 UpstreamClient 统一完成
         upstream.streamChat(
             region = region,
             body = payload,
             onStatus = { code, headers ->
                 status = code
-                credits[0] = headers.entries
-                    .firstOrNull { it.key.equals(HEADER_CREDITS, ignoreCase = true) }
-                    ?.value?.firstOrNull()
+                credits[0] = creditsOf(headers)
                 sendStreamHead(out, code, credits[0])
             },
             onChunk = { bytes, length ->
@@ -159,24 +196,63 @@ class BridgeServer(
                     usageTail.append(String(bytes, 0, length, Charsets.UTF_8))
                 }
             },
-            extraHeaders = deriveConversationHeaders(request, json),
+            extraHeaders = sessionHeaders,
         )
 
         val (promptTokens, completionTokens) = parseUsage(usageTail.toString())
-        callLog.append(
-            CallRecord(
-                time = started,
-                region = region.id,
-                model = model,
-                status = status,
-                promptTokens = promptTokens,
-                completionTokens = completionTokens,
-                credits = credits[0],
-                note = null,
-            ),
-        )
-        emit("转发 $model → $status (${System.currentTimeMillis() - started}ms)")
+        return ForwardResult(status, promptTokens, completionTokens, credits[0])
     }
+
+    /**
+     * `stream:false`：上游仍按 SSE 拉取，本地聚合成单条 `chat.completion` 再返回。
+     *
+     * 上游只支持流式；若不聚合，非流式客户端会把 `:heartbeat` / `data:` 当成 JSON 解析并报
+     * 「Expected literal value at character 0」。
+     */
+    private fun forwardBuffered(
+        region: Region,
+        payload: ByteArray,
+        out: OutputStream,
+        sessionHeaders: Map<String, String>,
+        model: String,
+    ): ForwardResult {
+        var status = 0
+        val buffer = ByteArrayOutputStream()
+        val credits = arrayOfNulls<String>(1)
+
+        upstream.streamChat(
+            region = region,
+            body = payload,
+            onStatus = { code, headers ->
+                status = code
+                credits[0] = creditsOf(headers)
+            },
+            onChunk = { bytes, length -> buffer.write(bytes, 0, length) },
+            extraHeaders = sessionHeaders,
+        )
+
+        val text = buffer.toString("UTF-8")
+        if (status !in 200..299) {
+            // 上游错误体本身是 JSON，原样回传，避免包装后丢掉上游错误码
+            sendRawJson(out, status, text, credits[0])
+            return ForwardResult(status, 0, 0, credits[0])
+        }
+
+        val completion = aggregateCompletion(text, model)
+        sendJson(out, 200, completion, credits[0])
+        val usage = completion.optJSONObject("usage")
+        return ForwardResult(
+            status = 200,
+            promptTokens = usage?.optInt("prompt_tokens") ?: 0,
+            completionTokens = usage?.optInt("completion_tokens") ?: 0,
+            credits = credits[0],
+        )
+    }
+
+    private fun creditsOf(headers: Map<String, List<String>>): String? =
+        headers.entries
+            .firstOrNull { it.key.equals(HEADER_CREDITS, ignoreCase = true) }
+            ?.value?.firstOrNull()
 
     private fun handleModels(request: Request, out: OutputStream) {
         val region = resolveRegion(request)
@@ -202,13 +278,15 @@ class BridgeServer(
 
     /**
      * ③ 改写请求体：
-     * - 强制 `stream = true`（客户端要非流式也统一走 SSE 透传）；
+     * - 记住客户端是否要流式：上游只支持流式，所以 `stream` 恒置 true，响应形态由调用方按
+     *   [Triple.third] 决定（非流式在本地聚合成单条 `chat.completion`）；
      * - 把上游不认识的 `developer` 角色降级为 `system`；
      * - 移除不兼容的可选字段。
      */
-    private fun rewriteChatBody(body: ByteArray): Pair<JSONObject, ByteArray>? {
+    private fun rewriteChatBody(body: ByteArray): Triple<JSONObject, ByteArray, Boolean>? {
         val json = runCatching { JSONObject(String(body, Charsets.UTF_8)) }.getOrNull() ?: return null
 
+        val wantsStream = json.optBoolean("stream", false)
         json.put("stream", true)
 
         val messages = json.optJSONArray("messages")
@@ -227,7 +305,7 @@ class BridgeServer(
         }
         INCOMPATIBLE_FIELDS.forEach { json.remove(it) }
 
-        return json to json.toString().toByteArray(Charsets.UTF_8)
+        return Triple(json, json.toString().toByteArray(Charsets.UTF_8), wantsStream)
     }
 
     /**
@@ -274,6 +352,104 @@ class BridgeServer(
             .take(ID_LENGTH)
 
     // ------------------------------------------------------------------
+    // SSE 聚合（供非流式客户端）
+    // ------------------------------------------------------------------
+
+    /**
+     * 把上游的 SSE 增量拼成一条完整的 `chat.completion`。
+     *
+     * 上游帧形如 `data: {...}`，另有 `:heartbeat` 注释行与结尾的 `data: [DONE]`，都要跳过。
+     * `tool_calls` 按 `index` 归并：`id` / `name` 取首个非空值，`arguments` 逐帧拼接。
+     */
+    private fun aggregateCompletion(sse: String, fallbackModel: String): JSONObject {
+        val content = StringBuilder()
+        val reasoning = StringBuilder()
+        val toolCalls = sortedMapOf<Int, JSONObject>()
+        var id = ""
+        var model = fallbackModel
+        var created = 0L
+        var finishReason = ""
+        var usage: JSONObject? = null
+
+        sse.lineSequence().forEach { rawLine ->
+            val line = rawLine.trim()
+            if (!line.startsWith(SSE_DATA_PREFIX)) return@forEach
+            val data = line.removePrefix(SSE_DATA_PREFIX).trim()
+            if (data.isEmpty() || data == SSE_DONE) return@forEach
+            val chunk = runCatching { JSONObject(data) }.getOrNull() ?: return@forEach
+
+            if (id.isEmpty()) id = chunk.text("id")
+            chunk.text("model").takeIf { it.isNotEmpty() }?.let { model = it }
+            if (created == 0L) created = chunk.optLong("created", 0L)
+            chunk.optJSONObject("usage")?.let { usage = it }
+
+            val choice = chunk.optJSONArray("choices")?.optJSONObject(0) ?: return@forEach
+            choice.text("finish_reason").takeIf { it.isNotEmpty() }?.let { finishReason = it }
+            val delta = choice.optJSONObject("delta") ?: return@forEach
+            content.append(delta.text("content"))
+            reasoning.append(delta.text("reasoning_content"))
+
+            val calls = delta.optJSONArray("tool_calls") ?: return@forEach
+            for (i in 0 until calls.length()) {
+                val call = calls.optJSONObject(i) ?: continue
+                val index = call.optInt("index", i)
+                val merged = toolCalls.getOrPut(index) {
+                    JSONObject()
+                        .put("index", index)
+                        .put("type", "function")
+                        .put("function", JSONObject().put("name", "").put("arguments", ""))
+                }
+                call.text("id").takeIf { it.isNotEmpty() }?.let { merged.put("id", it) }
+                val function = call.optJSONObject("function") ?: continue
+                val target = merged.getJSONObject("function")
+                function.text("name").takeIf { it.isNotEmpty() }?.let { target.put("name", it) }
+                function.text("arguments").takeIf { it.isNotEmpty() }?.let {
+                    target.put("arguments", target.optString("arguments") + it)
+                }
+            }
+        }
+
+        val message = JSONObject().put("role", ROLE_ASSISTANT).put("content", content.toString())
+        if (reasoning.isNotEmpty()) message.put("reasoning_content", reasoning.toString())
+        if (toolCalls.isNotEmpty()) {
+            // 个别客户端要求 tool_calls[].id 非空，缺失时补一个本地 id
+            toolCalls.forEach { (index, call) ->
+                if (call.text("id").isEmpty()) call.put("id", "call_local_$index")
+            }
+            message.put("tool_calls", JSONArray(toolCalls.values.toList()))
+        }
+
+        val normalizedUsage = usage ?: JSONObject()
+            .put("prompt_tokens", 0)
+            .put("completion_tokens", 0)
+            .put("total_tokens", 0)
+
+        return JSONObject()
+            .put("id", id.ifEmpty { DEFAULT_COMPLETION_ID })
+            .put("object", "chat.completion")
+            .put("created", created)
+            .put("model", model)
+            .put(
+                "choices",
+                JSONArray().put(
+                    JSONObject()
+                        .put("index", 0)
+                        .put("message", message)
+                        .put("finish_reason", finishReason.ifEmpty { FINISH_STOP }),
+                ),
+            )
+            .put("usage", normalizedUsage)
+    }
+
+    /** 取字符串字段；显式 `null` 与缺失都返回空串，避免拼出字面量 `null`。 */
+    private fun JSONObject.text(name: String): String {
+        val value = opt(name) ?: return ""
+        if (value === JSONObject.NULL) return ""
+        val text = value.toString()
+        return if (text == "null") "" else text
+    }
+
+    // ------------------------------------------------------------------
     // 响应写出
     // ------------------------------------------------------------------
 
@@ -290,17 +466,37 @@ class BridgeServer(
         out.flush()
     }
 
-    private fun sendJson(out: OutputStream, code: Int, payload: JSONObject) {
+    private fun sendJson(
+        out: OutputStream,
+        code: Int,
+        payload: JSONObject,
+        credits: String? = null,
+    ) {
         val bytes = payload.toString().toByteArray(Charsets.UTF_8)
         val head = buildString {
             append("HTTP/1.1 $code ${reason(code)}\r\n")
             append("Content-Type: application/json; charset=utf-8\r\n")
             append("Content-Length: ${bytes.size}\r\n")
+            if (!credits.isNullOrBlank()) append("$HEADER_CREDITS: $credits\r\n")
             append("Connection: close\r\n\r\n")
         }
         out.write(head.toByteArray(Charsets.US_ASCII))
         out.write(bytes)
         out.flush()
+    }
+
+    /** 上游错误体原样回传；不是 JSON 时包成 `{"error":{...}}`，保证客户端能解析。 */
+    private fun sendRawJson(out: OutputStream, code: Int, body: String, credits: String?) {
+        val text = body.trim()
+        val payload = runCatching { JSONObject(text) }.getOrNull()
+            ?: JSONObject().put(
+                "error",
+                JSONObject()
+                    .put("message", text.take(MAX_ERROR_CHARS).ifBlank { "上游返回空响应" })
+                    .put("type", "upstream_error")
+                    .put("code", code),
+            )
+        sendJson(out, code, payload, credits)
     }
 
     private fun sendError(out: OutputStream, code: Int, message: String) {
@@ -473,6 +669,12 @@ class BridgeServer(
         const val ROLE_DEVELOPER = "developer"
         const val ROLE_SYSTEM = "system"
         const val ROLE_USER = "user"
+        const val ROLE_ASSISTANT = "assistant"
+        const val SSE_DATA_PREFIX = "data:"
+        const val SSE_DONE = "[DONE]"
+        const val DEFAULT_COMPLETION_ID = "chatcmpl-local"
+        const val FINISH_STOP = "stop"
+        const val MAX_ERROR_CHARS = 500
         const val ID_LENGTH = 16
         const val USAGE_TAIL_LIMIT = 8 * 1024
         val INCOMPATIBLE_FIELDS = listOf("stream_options", "logprobs", "top_logprobs")
