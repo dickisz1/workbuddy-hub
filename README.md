@@ -22,6 +22,7 @@
 | 用量记录 | 每次调用记录模型、状态码、Token 用量、积分消耗 | [CallLogStore.kt](file:///workspace/app/src/main/java/com/wbhub/app/bridge/CallLogStore.kt) |
 | 自动任务 | 每 6 小时对已登录区域执行签到（+ 未验证的活跃上报） | [GrowthClient.kt](file:///workspace/app/src/main/java/com/wbhub/app/proto/GrowthClient.kt) |
 | 保活 | 前台服务（`specialUse`）+ 可选悬浮窗 | [BridgeService.kt](file:///workspace/app/src/main/java/com/wbhub/app/bridge/BridgeService.kt) · [BridgeOverlay.kt](file:///workspace/app/src/main/java/com/wbhub/app/bridge/BridgeOverlay.kt) |
+| 自动更新 | 启动时比对 Release 的 `version.json`，有新版本自动下载并拉起系统安装器 | [Updater.kt](file:///workspace/app/src/main/java/com/wbhub/app/data/Updater.kt) |
 
 ---
 
@@ -289,7 +290,22 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 
 ### CI
 
-[.github/workflows/android.yml](file:///workspace/.github/workflows/android.yml)：推送到 `main` 或手动触发 → JDK 21 + SDK 35 → `assembleDebug` → 自动创建 Release（tag `v<run_number>`）并上传 APK。
+[.github/workflows/android.yml](file:///workspace/.github/workflows/android.yml)：推送到 `main` 或手动触发 → JDK 21 + SDK 35 → `assembleDebug` → 生成 `version.json` → 自动创建 Release（tag `v<run_number>`）并上传 APK 与 `version.json`。
+
+### 自动更新
+
+App 每次进程启动时（API 平台页首次 `onResume`）请求
+`GET https://api.github.com/repos/dickisz1/workbuddy-hub/releases/latest`：
+
+1. 只认 Release 资产里的 `version.json`，读 `versionCode` 与本机比对，**必须严格大于本机**才提示
+2. 未发现新版本：静默，不打扰；手动点「检查更新」才显示「已是最新版本（x.y.z）」
+3. 发现新版本：弹窗确认 → 从同一 Release 下载 `app-debug.apk` 到 `cacheDir/updates/` → 通过 `FileProvider` 拉起系统安装器
+4. 未授予「安装未知应用」时引导到系统设置页，授权后回来再点一次
+
+两点系统限制如实说明：
+
+- **无法静默安装**。Android 要求用户在系统弹窗里确认，App 只能把安装器拉起来
+- 下载源是 `github.com`，国内网络需代理；失败时界面提示「下载失败，请检查网络或 VPN 后重试」
 
 ### 工程配置
 
@@ -297,7 +313,7 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 | --- | --- |
 | applicationId / namespace | `com.wbhub.app` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
-| versionCode / versionName | 40 / 0.4.0 |
+| versionCode / versionName | 60 / 0.6.0 |
 | Java / Kotlin JVM target | 17 |
 | 主要依赖 | AndroidX Core、AppCompat、Material、Fragment、Coroutines、Security-Crypto |
 
@@ -354,5 +370,7 @@ app/src/main/
 
 | 版本 | 要点 |
 | --- | --- |
+| 0.6.0 | 应用内自动更新（比对 `version.json`、下载 APK、拉起安装器）；CI 发布 `version.json` |
+| 0.5.0 | `stream:false` 请求在本地把 SSE 聚合成单条 `chat.completion`，修复非流式客户端首字符解析失败 |
 | 0.4.0 | 凭证改为 WorkBuddy 原生浏览器登录流程；新增 refreshToken 静默续期；模型列表按 `agents[cli].models` 解析 |
 | 0.3.x | 初版本地反向代理、双区域凭证、保活与自动签到 |

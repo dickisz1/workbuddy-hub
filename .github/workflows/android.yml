@@ -44,11 +44,22 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      # 应用内自动更新靠这个文件比较版本：App 读 versionCode 判断是否需要升级
+      - name: Write version manifest
+        run: |
+          CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts)
+          NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          printf '{"versionCode":%s,"versionName":"%s","tag":"v%s"}\n' \
+            "$CODE" "$NAME" "${{ github.run_number }}" > version.json
+          cat version.json
+
       - name: Publish APK as release asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: WorkBuddy Hub build ${{ github.run_number }}
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            version.json
           draft: false
           prerelease: false

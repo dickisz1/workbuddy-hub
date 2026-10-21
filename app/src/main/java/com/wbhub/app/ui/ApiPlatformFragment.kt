@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
 import com.wbhub.app.App
@@ -17,6 +18,7 @@ import com.wbhub.app.R
 import com.wbhub.app.bridge.BridgePrefs
 import com.wbhub.app.bridge.BridgeService
 import com.wbhub.app.bridge.CallLogStore
+import com.wbhub.app.data.Updater
 import com.wbhub.app.proto.CredentialStore
 import com.wbhub.app.proto.Region
 import com.wbhub.app.proto.UpstreamClient
@@ -38,6 +40,11 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
     private lateinit var portInput: TextInputEditText
     private lateinit var secretInput: TextInputEditText
     private lateinit var endpointView: TextView
+    private lateinit var updateInfoView: TextView
+    private lateinit var updater: Updater
+
+    /** 每次进程启动只自动查一次更新，避免每次回到前台都请求 GitHub。 */
+    private var autoChecked = false
 
     /** 悬浮窗权限申请结果：授权成功才真正打开悬浮窗。 */
     private val overlayPermissionLauncher =
@@ -56,6 +63,8 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
         portInput = view.findViewById(R.id.input_port)
         secretInput = view.findViewById(R.id.input_secret)
         endpointView = view.findViewById(R.id.endpoint_info)
+        updateInfoView = view.findViewById(R.id.update_info)
+        updater = Updater(requireContext())
 
         portInput.setText(prefs.port.toString())
         secretInput.setText(prefs.secret)
@@ -67,12 +76,72 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
         overlaySwitch.setOnCheckedChangeListener { _, checked -> toggleOverlay(checked) }
         view.findViewById<MaterialButton>(R.id.btn_apply).setOnClickListener { applyConfig() }
         view.findViewById<MaterialButton>(R.id.btn_models).setOnClickListener { loadModels() }
+        view.findViewById<MaterialButton>(R.id.btn_update).setOnClickListener {
+            checkForUpdate(silent = false)
+        }
     }
 
     override fun onResume() {
         super.onResume()
         renderLog()
         overlaySwitch.isChecked = prefs.overlayEnabled
+        if (!autoChecked) {
+            autoChecked = true
+            checkForUpdate(silent = true)
+        }
+    }
+
+    /** 检查 GitHub Release；有新版本则弹窗询问，下载后拉起系统安装器。 */
+    private fun checkForUpdate(silent: Boolean) {
+        if (!silent) updateInfoView.text = getString(R.string.update_checking)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val release = withContext(Dispatchers.IO) { runCatching { updater.check() }.getOrNull() }
+            if (release == null) {
+                if (!silent) {
+                    updateInfoView.text =
+                        getString(R.string.update_latest, updater.installedVersionName())
+                }
+                return@launch
+            }
+            updateInfoView.text = getString(R.string.update_found_title, release.versionName)
+            promptUpdate(release)
+        }
+    }
+
+    private fun promptUpdate(release: Updater.Release) {
+        val current = updater.installedVersionName()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.update_found_title, release.versionName))
+            .setMessage(getString(R.string.update_found_message, current, release.versionName))
+            .setPositiveButton(R.string.update_download) { _, _ -> startUpdate(release) }
+            .setNegativeButton(R.string.update_later, null)
+            .show()
+    }
+
+    private fun startUpdate(release: Updater.Release) {
+        // Android 不允许静默安装：未授权时先去设置页，回来后用户再点一次
+        if (!updater.canInstall()) {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.update_install_permission)
+                .setMessage(R.string.update_install_permission_message)
+                .setPositiveButton(R.string.update_grant) { _, _ ->
+                    runCatching { startActivity(updater.requestInstallPermissionIntent()) }
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+            return
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            updateInfoView.text = getString(R.string.update_downloading)
+            val file = updater.download(release)
+            if (file == null) {
+                updateInfoView.text = getString(R.string.update_download_failed)
+                return@launch
+            }
+            val launched = runCatching { startActivity(updater.installIntent(file)) }.isSuccess
+            if (!launched) updateInfoView.text = getString(R.string.update_install_launch_failed)
+        }
     }
 
     private fun toggleService(checked: Boolean) {
