@@ -131,7 +131,7 @@ object Wire {
     const val UPSTREAM_USER_AGENT = "WorkBuddy/$IDE_VERSION_VALUE"
 
     const val PRODUCT_NAME = "workbuddy-hub"
-    const val APP_VERSION = "0.6.3"
+    const val APP_VERSION = "0.6.4"
     const val CLIENT_TYPE = "android-hub"
 
     fun upstreamUrl(region: Region, path: String): String = region.host + path

@@ -35,6 +35,11 @@
     <string name="platform_overlay">悬浮窗保活</string>
     <string name="platform_apply">应用端口与密钥</string>
     <string name="platform_models">拉取模型列表</string>
+    <string name="platform_copy_endpoint">复制端点</string>
+    <string name="platform_copy_secret">复制密钥</string>
+    <string name="platform_copy_all">复制全部</string>
+    <string name="platform_copied">已复制：%1$s</string>
+    <string name="platform_copy_failed">复制失败，请长按文本手动选择</string>
     <string name="platform_log_title">调用日志</string>
 
     <string name="chat_title">内置对话</string>

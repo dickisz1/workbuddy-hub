@@ -1,11 +1,15 @@
 package com.wbhub.app.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -76,6 +80,15 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
         overlaySwitch.setOnCheckedChangeListener { _, checked -> toggleOverlay(checked) }
         view.findViewById<MaterialButton>(R.id.btn_apply).setOnClickListener { applyConfig() }
         view.findViewById<MaterialButton>(R.id.btn_models).setOnClickListener { loadModels() }
+        view.findViewById<MaterialButton>(R.id.btn_copy_endpoint).setOnClickListener {
+            copyToClipboard(getString(R.string.platform_copy_endpoint), prefs.endpoint())
+        }
+        view.findViewById<MaterialButton>(R.id.btn_copy_secret).setOnClickListener {
+            copyToClipboard(getString(R.string.platform_copy_secret), prefs.secret)
+        }
+        view.findViewById<MaterialButton>(R.id.btn_copy_all).setOnClickListener {
+            copyToClipboard(getString(R.string.platform_copy_all), renderEndpointText())
+        }
         view.findViewById<MaterialButton>(R.id.btn_update).setOnClickListener {
             checkForUpdate(silent = false)
         }
@@ -249,6 +262,20 @@ class ApiPlatformFragment : Fragment(R.layout.fragment_api_platform) {
         append("API 密钥：${prefs.secret}\n")
         append("模型列表：${prefs.modelsEndpoint()}\n")
         append("供应商：OpenAI 兼容")
+    }
+
+    /** 复制到剪贴板；拿不到剪贴板服务时提示改用长按选择。 */
+    private fun copyToClipboard(label: String, text: String) {
+        val copied = runCatching {
+            val manager = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            manager.setPrimaryClip(ClipData.newPlainText(label, text))
+        }.isSuccess
+        val message = if (copied) {
+            getString(R.string.platform_copied, label)
+        } else {
+            getString(R.string.platform_copy_failed)
+        }
+        Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
     }
 
     private fun renderLog() {

@@ -252,6 +252,8 @@ X-Enterprise-Id / X-Tenant-Id: <仅企业账号>
 
 改完必须点「应用端口与密钥」，服务会重启并重新绑定；只用旧值继续请求会得到 401（密钥错）或连接被拒（端口错）。
 
+信息面板下方三个按钮直接写入剪贴板：**复制端点**（完整的 `http://127.0.0.1:<端口>/v1/chat/completions`）、**复制密钥**、**复制全部**（端点 + 密钥 + 模型列表 + 供应商四行）。客户端只接受 `base_url` 时，填端点去掉 `/chat/completions` 即可。
+
 ### 5.7 调用日志
 
 `filesDir/call_log.jsonl`，一行一次调用，界面上自动每 2 秒刷新（新增 40 条在内存视图中展示）。
@@ -355,7 +357,7 @@ App 每次进程启动时（API 平台页首次 `onResume`）请求
 | --- | --- |
 | applicationId / namespace | `com.wbhub.app` |
 | minSdk / targetSdk / compileSdk | 26 / 35 / 35 |
-| versionCode / versionName | 63 / 0.6.3 |
+| versionCode / versionName | 64 / 0.6.4 |
 | Java / Kotlin JVM target | 17 |
 | 主要依赖 | AndroidX Core、AppCompat、Material、Fragment、Coroutines、Security-Crypto |
 
@@ -412,6 +414,7 @@ app/src/main/
 
 | 版本 | 要点 |
 | --- | --- |
+| 0.6.4 | 端点信息旁加「复制端点 / 复制密钥 / 复制全部」，配置客户端时不必手抄 |
 | 0.6.3 | 调用日志记上游原文、失败请求也留痕、页面每 2 秒自动刷新；内置对话同样入日志 |
 | 0.6.2 | 固定签名（仓库内 keystore），修复「软件包与现有软件包存在冲突」导致无法覆盖安装 |
 | 0.6.1 | 内置对话补会话头；429/401 报错带上游原文与 `Retry-After`，不再只显示状态码 |

@@ -73,6 +73,48 @@
             android:background="?attr/colorSurfaceVariant"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_copy_endpoint"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:text="@string/platform_copy_endpoint"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_copy_secret"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:text="@string/platform_copy_secret"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_copy_all"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:text="@string/platform_copy_all"
+                android:textSize="12sp" />
+        </LinearLayout>
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_models"
             android:layout_width="match_parent"
